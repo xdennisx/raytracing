@@ -5,6 +5,7 @@
 #include "primitives.h"
 #include "raytracing.h"
 #include "idx_stack.h"
+#include "pthread.h"
 
 #define MAX_REFLECTION_BOUNCES	3
 #define MAX_DISTANCE 1000000000000.0
@@ -14,6 +15,18 @@
 #define SQUARE(x) (x * x)
 #define MAX(a, b) (a > b ? a : b)
 
+struct raytracing_thread_para {
+    uint8_t *pixels;
+    color background_color;
+    rectangular_node *rectangulars;
+    sphere_node *spheres;
+    light_node *lights;
+    const viewpoint *view;
+    int width;
+    int height;
+    int thread_index;
+    int thread_count;
+};
 /* @param t t distance
  * @return 1 means hit, otherwise 0
  */
@@ -452,23 +465,24 @@ static unsigned int ray_color(const point3 e, double t,
     return 1;
 }
 
-/* @param background_color this is not ambient light */
-void raytracing(uint8_t *pixels, color background_color,
-                rectangular_node rectangulars, sphere_node spheres,
-                light_node lights, const viewpoint *view,
-                int width, int height)
+void *raytracing_thread_funct(void *args)
 {
+    struct raytracing_thread_para *arg = args;
+
     point3 u, v, w, d;
     color object_color = { 0.0, 0.0, 0.0 };
 
     /* calculate u, v, w */
-    calculateBasisVectors(u, v, w, view);
+    calculateBasisVectors(u, v, w, arg->view);
 
     idx_stack stk;
 
     int factor = sqrt(SAMPLES);
-    for (int j = 0; j < height; j++) {
-        for (int i = 0; i < width; i++) {
+    int gap = arg->height / arg->thread_count;
+    int end = (arg->thread_index == (arg->thread_count)-1) ? arg->height
+              : gap * (arg->thread_index + 1);
+    for (int j = arg->thread_index * gap; j < end; j++) {
+        for (int i = 0; i < arg->width; i++) {
             double r = 0, g = 0, b = 0;
             /* MSAA */
             for (int s = 0; s < SAMPLES; s++) {
@@ -476,23 +490,56 @@ void raytracing(uint8_t *pixels, color background_color,
                 rayConstruction(d, u, v, w,
                                 i * factor + s / factor,
                                 j * factor + s % factor,
-                                view,
-                                width * factor, height * factor);
-                if (ray_color(view->vrp, 0.0, d, &stk, rectangulars, spheres,
-                              lights, object_color,
+                                arg->view,
+                                arg->width * factor, arg->height * factor);
+                if (ray_color(arg->view->vrp, 0.0, d, &stk, *arg->rectangulars, *arg->spheres,
+                              *arg->lights, object_color,
                               MAX_REFLECTION_BOUNCES)) {
                     r += object_color[0];
                     g += object_color[1];
                     b += object_color[2];
                 } else {
-                    r += background_color[0];
-                    g += background_color[1];
-                    b += background_color[2];
+                    r += arg->background_color[0];
+                    g += arg->background_color[1];
+                    b += arg->background_color[2];
                 }
-                pixels[((i + (j * width)) * 3) + 0] = r * 255 / SAMPLES;
-                pixels[((i + (j * width)) * 3) + 1] = g * 255 / SAMPLES;
-                pixels[((i + (j * width)) * 3) + 2] = b * 255 / SAMPLES;
+                arg->pixels[((i + (j * arg->width)) * 3) + 0] = r * 255 / SAMPLES;
+                arg->pixels[((i + (j * arg->width)) * 3) + 1] = g * 255 / SAMPLES;
+                arg->pixels[((i + (j * arg->width)) * 3) + 2] = b * 255 / SAMPLES;
             }
         }
     }
+}
+
+/* @param background_color this is not ambient light */
+void raytracing(uint8_t *pixels, color background_color,
+                rectangular_node rectangulars, sphere_node spheres,
+                light_node lights, const viewpoint *view,
+                int width, int height)
+{
+    const int num_of_thread = 4;
+    pthread_t pth[num_of_thread];
+    struct raytracing_thread_para para[num_of_thread];
+
+    for(int i=0; i<num_of_thread; ++i) {
+        para[i].pixels = pixels;
+        para[i].background_color[0] = background_color[0];
+        para[i].background_color[1] = background_color[1];
+        para[i].background_color[2] = background_color[2];
+        para[i].rectangulars = &rectangulars;
+        para[i].spheres = &spheres;
+        para[i].lights = &lights;
+        para[i].view = view;
+        para[i].width = width;
+        para[i].height = height;
+        para[i].thread_index = i;
+        para[i].thread_count = num_of_thread;
+    }
+
+    for(int i=0; i<num_of_thread; ++i)
+        pthread_create(&pth[i], NULL, raytracing_thread_funct, &para[i]);
+
+    for(int i=0; i<num_of_thread; ++i)
+        pthread_join(pth[i], NULL);
+
 }
