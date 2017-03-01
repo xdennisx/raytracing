@@ -481,7 +481,7 @@ void *raytracing_thread_funct(void *args)
     int gap = arg->height / arg->thread_count;
     int end = (arg->thread_index == (arg->thread_count)-1) ? arg->height
               : gap * (arg->thread_index + 1);
-    for (int j = arg->thread_index * gap; j < end; j++) {
+    for (int j = arg->thread_index; j < arg->height; j+=arg->thread_count) {
         for (int i = 0; i < arg->width; i++) {
             double r = 0, g = 0, b = 0;
             /* MSAA */
